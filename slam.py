@@ -7,6 +7,11 @@ from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
     
 def main():
+    plt_map_no_op = True   # plot initial map
+    plt_odom_no_op = True  # plot initial odometry
+    plt_map_op = True       # plot optimized map
+    plt_odom_op = True      # plot optimized odometry
+    use_info = False        # using covariance information, else identity matrix
     ############################################
     #                                          #
     #          DATA PROCESSING PART            #
@@ -91,11 +96,36 @@ def main():
     
     #Add first node as a fixed vertex. (True = fixed, False = non-fixed)
     optimizer.add_vertex(0, g2o.Isometry3d(nodes[0][0]),True)
+
+    if use_info:
+        x_l = [nodes[0][0][0][3]]
+        y_l = [nodes[0][0][1][3]]
+        yaw_l = [R.from_dcm(nodes[0][0][0:3,0:3]).as_euler('zyx')[0]]
+        cov_l = []
+        info_l = [np.eye(6)]
     
     for i in range(1,len(nodes)):
         optimizer.add_vertex(i, g2o.Isometry3d(nodes[i][0]), False)
         
-        optimizer.add_edge([i-1,i],g2o.Isometry3d(nodes[i][2]),
+        if use_info:
+            x_l.append(nodes[i][0][0][3])
+            y_l.append(nodes[i][0][1][3])
+            yaw_l.append(R.from_dcm(nodes[i][0][0:3,0:3]).as_euler('zyx')[0])
+
+            cov_l = [x_l, y_l, yaw_l]
+            cov_l = np.cov(cov_l)
+            cov_l = np.insert(cov_l, 2, [0,0,0], axis = 1)
+            cov_l = np.insert(cov_l, 2, [0,0,0], axis = 1)
+            cov_l = np.insert(cov_l, 2, [0,0,0], axis = 1)
+            cov_l = np.insert(cov_l, 2, [0,0,0,0,1,0], axis = 0)
+            cov_l = np.insert(cov_l, 2, [0,0,0,1,0,0], axis = 0)
+            cov_l = np.insert(cov_l, 2, [0,0,1,0,0,0], axis = 0)
+            info_l.append(np.linalg.inv(cov_l))
+
+            optimizer.add_edge([i-1,i],g2o.Isometry3d(nodes[i][2]),
+                           information=info_l[-1])
+        else:
+            optimizer.add_edge([i-1,i],g2o.Isometry3d(nodes[i][2]),
                            information=np.eye(6))
 
     #############################################################################
@@ -104,29 +134,32 @@ def main():
     #                                                                           #
     #############################################################################
 
-    for i in range(0,len(nodes)):
-        LiDAR = nodes[i][1][0:4];
-        LiDAR = np.dot(nodes[i][0], LiDAR)
-        plt.scatter(LiDAR[0], LiDAR[1], c='b', marker='o',s=0.2)
+    if plt_map_no_op:
+        for i in range(0,len(nodes)):
+            LiDAR = nodes[i][1][0:4];
+            LiDAR = np.dot(nodes[i][0], LiDAR)
+            plt.scatter(LiDAR[0], LiDAR[1], c='b', marker='o',s=0.2)
 
-    print("Close the plot window to continue...")
-    plt.show()
+        print("Close the plot window to continue...")
+        plt.show()
 
-    optimizer.save_g2o('beforeSLAM.g2o')
-    
+    if plt_odom_no_op:
+        for i in range(0,len(nodes)):
+            pose = nodes[i][0]
+            x = pose[0][3]
+            y = pose[1][3]
+            plt.scatter(x, y, c='b', marker='o',s=0.2)
+        
+        print("Close the plot window to continue...")
+        plt.show()
+
     #############################################################################
     # ASSIGNMENTS 3 : FIND LOOP CLOSURE                                         #
     #                                                                           #
     # Simply, you can put all pair in the matching pair, it will be work.       #
     # How can you reduce pairs for less computation? (option)                   #
     #                                                                           #
-    #############################################################################  
-
-    # matchingPair = [[src0,dst0],[src1,dst2]...]
-    matchingPair = []
-
-    
-    
+    #############################################################################     
     #####################################################################################
     # ASSIGNMENTS 4 : MATCHING PAIRS, OPTIMIZE!                                         #
     #                                                                                   #
@@ -182,8 +215,12 @@ def main():
                     matching_pairs.append([src, dst])
                     print("{:>3} th Matching {:>3} => {:>3} , Iter: {:>3} , ME: {:>4}"
                             .format(len(matching_pairs), src, dst, iterations, np.round(np.average(distances), 4)))
-                    optimizer.add_edge([src,dst], g2o.Isometry3d(np.dot(T, dst2srcRT)),
-                                information=np.eye(6))
+                    if use_info:
+                        optimizer.add_edge([src,dst], g2o.Isometry3d(np.dot(T, dst2srcRT)),
+                                    information=info_l[dst])
+                    else:
+                        optimizer.add_edge([src,dst], g2o.Isometry3d(np.dot(T, dst2srcRT)),
+                                    information=np.eye(6))
                     optimizer.optimize()
     print("=========================================================")
     print("Number of searched pairs: {}, Number of matched pairs: {}"
@@ -196,17 +233,39 @@ def main():
     #                                                                           #
     #############################################################################
 
-    for i in range(0,len(nodes)):
-        dstLiDAR = nodes[i][1][0:4];
-        rt = optimizer.get_pose(i)
-        T = np.insert(rt.R, 3, rt.t, axis=1)
-        T = np.insert(T, 3, [0, 0, 0, 1], axis=0)
-        dstLiDAR = np.dot(T, dstLiDAR)
-        plt.scatter(dstLiDAR[0], dstLiDAR[1], c='b', marker='o',s=0.2)
-        
-    print("Close the plot window to continue...")
-    plt.show()
+    if plt_map_op:
+        for i in range(0,len(nodes)):
+            dstLiDAR = nodes[i][1][0:4];
+            rt = optimizer.get_pose(i)
+            T = np.insert(rt.R, 3, rt.t, axis=1)
+            T = np.insert(T, 3, [0, 0, 0, 1], axis=0)
+            dstLiDAR = np.dot(T, dstLiDAR)
+            plt.scatter(dstLiDAR[0], dstLiDAR[1], c='b', marker='o',s=0.2)
+            
+        print("Close the plot window to continue...")
+        plt.show()
+
+    if plt_odom_op:
+        for i in range(0,len(nodes)):
+            rt = optimizer.get_pose(i)
+            x = rt.t[0]
+            y = rt.t[1]
+            plt.scatter(x, y, c='b', marker='o',s=0.2)
+
+        for src, dst in matching_pairs:
+            rt_src = optimizer.get_pose(src)
+            rt_dst = optimizer.get_pose(dst)
+            x_src = rt_src.t[0]
+            y_src = rt_src.t[1]
+            x_dst = rt_dst.t[0]
+            y_dst = rt_dst.t[1]
+            xx = [x_src, x_dst]
+            yy = [y_src, y_dst]
+            plt.plot(xx, yy, c='r', linewidth=1.0)
     
+        print("Close the plot window to continue...")
+        plt.show()
+
     optimizer.save_g2o('afterSLAM.g2o')
 
 
